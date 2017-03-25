@@ -10,6 +10,7 @@ import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.errors.RepositoryNotFoundException;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.transport.RefSpec;
 
 import java.io.File;
 import java.io.IOException;
@@ -112,6 +113,25 @@ public class LocalGitRepo {
     public Ref tagRepo(AnnotatedTag tag) throws GitAPIException {
         Ref tagRef = tag.saveAtHEAD(git);
         return tagRef;
+    }
+
+    public void deleteTag(String tagName) throws GitAPIException {
+        git.tagDelete().setTags(tagName).call();
+    }
+
+    public void deleteTag(AnnotatedTag tag, boolean remote) throws GitAPIException {
+        Ref tagRef = tag.ref();
+        deleteTag(tag.name());
+
+        if (remote) {
+            RefSpec refSpec = new RefSpec()
+                .setSource(null)
+                .setDestination(tagRef.getTarget().getName());
+
+            git.push().setRefSpecs(refSpec).setRemote(remoteUrl).call();
+            // reset remoteTags
+            remoteTags = null;
+        }
     }
 
     /**

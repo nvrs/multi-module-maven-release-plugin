@@ -14,7 +14,9 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static java.util.Arrays.asList;
 
@@ -97,26 +99,36 @@ public class ReleaseMojo extends BaseMojo {
      */
     @Parameter(alias = "pushTags", defaultValue="true", property="push")
     private boolean pushTags;
+
+    /**
+     * Delete tags of non-released artifacts on release failure.
+     */
+    @Parameter(alias = "deleteTagsOnFail", defaultValue = "false", property = "deleteTagsOnFail")
+    private boolean deleteTagsOnFail;
     
 
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
         Log log = getLog();
+        Reactor reactor = null;
+        LocalGitRepo repo = null;
+        List<AnnotatedTag> proposedTags = null;
+        ResolverWrapper resolverWrapper = new ResolverWrapper(factory, artifactResolver, remoteRepositories, localRepository);
 
         try {
             configureJsch(log);
 
 
-            LocalGitRepo repo = LocalGitRepo.fromCurrentDir(getRemoteUrlOrNullIfNoneSet(project.getOriginalModel().getScm(), project.getModel().getScm()));
+            repo = LocalGitRepo.fromCurrentDir(getRemoteUrlOrNullIfNoneSet(project.getOriginalModel().getScm(), project.getModel().getScm()));
             repo.errorIfNotClean();
 
-            ResolverWrapper resolverWrapper = new ResolverWrapper(factory, artifactResolver, remoteRepositories, localRepository);
-            Reactor reactor = Reactor.fromProjects(log, repo, project, projects, buildNumber, modulesToForceRelease, noChangesAction, resolverWrapper);
+            resolverWrapper = new ResolverWrapper(factory, artifactResolver, remoteRepositories, localRepository);
+            reactor = Reactor.fromProjects(log, repo, project, projects, buildNumber, modulesToForceRelease, noChangesAction, resolverWrapper);
             if (reactor == null) {
                 return;
             }
 
-            List<AnnotatedTag> proposedTags = figureOutTagNamesAndThrowIfAlreadyExists(reactor.getModulesInBuildOrder(), repo, modulesToRelease);
+            proposedTags = figureOutTagNamesAndThrowIfAlreadyExists(reactor.getModulesInBuildOrder(), repo, modulesToRelease);
 
             List<File> changedFiles = updatePomsAndReturnChangedFiles(log, repo, reactor);
 
@@ -155,6 +167,8 @@ public class ReleaseMojo extends BaseMojo {
             gae.printStackTrace(new PrintWriter(sw));
             String exceptionAsString = sw.toString();
 
+            rollbackTags(repo, reactor, resolverWrapper, proposedTags);
+
             printBigErrorMessageAndThrow(log, "Could not release due to a Git error",
                 asList("There was an error while accessing the Git repository. The error returned from git was:",
                     gae.getMessage(), "Stack trace:", exceptionAsString));
@@ -163,8 +177,70 @@ public class ReleaseMojo extends BaseMojo {
             e.printStackTrace(new PrintWriter(sw));
             String exceptionAsString = sw.toString();
 
+            rollbackTags(repo, reactor, resolverWrapper, proposedTags);
+
             printBigErrorMessageAndThrow(log, e.getMessage(),
                     asList("There was an error while creating temporary settings file. The error was:", e.getMessage(), "Stack trace:", exceptionAsString));
+        } catch (MojoExecutionException e) {
+            rollbackTags(repo, reactor, resolverWrapper, proposedTags);
+
+            throw e;
+        }
+    }
+
+    /**
+     * Delete tags from local and remote (if tags were pushed) repository for modules that were not released.
+     * The test for detecting non-released modules is whether they can be resolved in the repository or not.
+     *
+     * @param repo
+     * @param reactor
+     * @param resolverWrapper
+     */
+    private void rollbackTags(LocalGitRepo repo, Reactor reactor, ResolverWrapper resolverWrapper, List<AnnotatedTag> tags) {
+        if (!deleteTagsOnFail) {
+            return;
+        }
+
+        try {
+            if (repo == null) {
+                getLog().info("Nothing to rollback, repo not initialized");
+                return;
+            }
+
+            if (reactor == null) {
+                getLog().info("Nothing to rollback, reactor not initialized");
+                return;
+            }
+
+            if (tags == null || tags.isEmpty()) {
+                throw new AssertionError("proposedTags is null or empty but released was triggered");
+            }
+
+            Map<String, AnnotatedTag> tagNameMap = new HashMap<>();
+            for (AnnotatedTag tag : tags) {
+                tagNameMap.put(tag.name(), tag);
+            }
+
+            getLog().info("Attempting to rollback any tags that were created for modules that were not released");
+            List<ReleasableModule> modules = reactor.getModulesInBuildOrder();
+
+            for (ReleasableModule module : modules) {
+                if (module.willBeReleased() &&
+                    !resolverWrapper.isResolvable(module.getGroupId(), module.getArtifactId(), module.getNewVersion(), module.getProject().getPackaging(), getLog())) {
+
+                    AnnotatedTag tag = tagNameMap.get(module.getTagName());
+                    if (tag == null) {
+                        throw new AssertionError("Could not find AnnotatedTag!");
+                    }
+
+                    getLog().info("Tag " + tag.name() + " will be delete as artifact " +
+                                  module.getGroupId() + ":" + module.getArtifactId() + " could not be resolved");
+
+                    repo.deleteTag(tag, pushTags);
+                }
+            }
+        } catch (GitAPIException e) {
+            getLog().warn("Failed to rollback tags, reason " + e.getMessage(), e);
         }
     }
 

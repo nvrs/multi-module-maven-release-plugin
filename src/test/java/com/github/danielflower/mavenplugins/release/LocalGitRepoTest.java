@@ -6,6 +6,7 @@ import org.eclipse.jgit.lib.StoredConfig;
 import org.junit.Test;
 import scaffolding.TestProject;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -62,6 +63,35 @@ public class LocalGitRepoTest {
             assertThat(repo.hasLocalTag(tagName), is(true));
             assertThat(repo.remoteTagsFrom(tags(tagName)).size(), is(1));
         }
+    }
+
+    @Test
+    public void canDeleteLocalTag() throws GitAPIException, IOException {
+        TestProject project = TestProject.singleModuleProject();
+        LocalGitRepo repo = new LocalGitRepo(project.local, null);
+
+        String tagName = "some-tag-to-delete";
+        tag(project.local, tagName);
+        assertThat(repo.hasLocalTag(tagName), is(true));
+
+        repo.deleteTag(tagName);
+        assertThat(repo.hasLocalTag(tagName), is(false));
+    }
+
+    @Test
+    public void canDeleteLocalAndRemoteTag() throws GitAPIException, IOException, ValidationException {
+        TestProject project = TestProject.singleModuleProject();
+        AnnotatedTag tag = AnnotatedTag.create("my-name", "the-version", 2134);
+        LocalGitRepo repo = new LocalGitRepo(project.local, scmUrlToRemote(dirToGitScmReference(project.originDir)));
+
+        repo.tagRepoAndPush(tag);
+        assertThat(repo.hasLocalTag(tag.name()), is(true));
+        assertThat(repo.remoteTagsFrom(tags(tag.name())).size(), is(1));
+
+        repo.deleteTag(tag, true);
+        assertThat(repo.hasLocalTag(tag.name()), is(false));
+        assertThat(repo.remoteTagsFrom(tags(tag.name())).size(), is(0));
+
     }
 
     private static List<AnnotatedTag> tags(String... tagNames) {

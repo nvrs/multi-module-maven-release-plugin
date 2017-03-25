@@ -16,9 +16,11 @@ import java.io.File;
 import java.io.IOException;
 
 import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static scaffolding.ExactCountMatcher.oneOf;
 import static scaffolding.ExactCountMatcher.twoOf;
+import static scaffolding.GitMatchers.hasCleanWorkingDirectory;
 
 public class GitRelatedTest {
 
@@ -85,6 +87,23 @@ public class GitRelatedTest {
         config.save();
 
         testProject.mvnRelease("1");
+    }
+
+    @Test
+    public void doesNotReleaseIfThereAreTestFailuresButTagsAreWrittenAndThenDeleted() throws Exception {
+        TestProject projectWithTestsThatFail = TestProject.moduleWithTestFailure();
+
+        try {
+            projectWithTestsThatFail.mvnRelease("2", "-DdeleteTagsOnFail=true");
+            Assert.fail("Should have failed");
+        } catch (MavenExecutionException e) {
+
+        }
+        assertThat(projectWithTestsThatFail.local, hasCleanWorkingDirectory());
+        assertThat(projectWithTestsThatFail.local.tagList().call().size(), is(0));
+        // tag is not deleted from origin as it's not picked up from the project's SCM section
+        // instead TestProject setup hardcodes origin when it creates local repo
+//        assertThat(projectWithTestsThatFail.origin.tagList().call().size(), is(0));
     }
 
 }
